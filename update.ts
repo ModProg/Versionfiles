@@ -75,7 +75,7 @@ const minimum_index = versions.game.findIndex((game) =>
 for (const game of versions.game.slice(0, minimum_index + 1)) {
   if (game.stable) {
     const mappings = versions.mappings.findLast((mapping) =>
-      mapping.gameVersion = game.version
+      mapping.gameVersion == game.version
     );
 
     const mod_versions = await Promise.all(
