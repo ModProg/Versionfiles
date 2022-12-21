@@ -1,3 +1,4 @@
+#! /bin/env -S deno run --allow-all
 type Versions = {
   game: {
     version: `${number}.${number}${`.${number}` | ""}`;
