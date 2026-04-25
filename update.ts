@@ -62,39 +62,93 @@ async function get_mod_version(
   }
 }
 
-const versions_fetch = await fetch("https://meta.fabricmc.net/v2/versions/");
-const versions = await versions_fetch.json() as Versions;
-const minimum_game_version = "1.18";
-const mods = Deno.readTextFileSync("mods").trim().split("\n");
+function parseProperties(content: string): {
+  lines: string[];
+  map: Map<string, { lineIndex: number; value: string }>;
+} {
+  const lines = content.split(/\r?\n/);
+  const map = new Map<string, { lineIndex: number; value: string }>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^\s*([^#\s][^=]*)=(.*)$/);
+    if (m) {
+      const key = m[1].trim();
+      const value = m[2].trim();
+      map.set(key, { lineIndex: i, value });
+    }
+  }
+  return { lines, map };
+}
 
-const loader = versions.loader[0];
+function buildUpdatedContent(
+  originalContent: string,
+  updates: Record<string, string>,
+): string {
+  const parsed = parseProperties(originalContent);
+  const { lines, map } = parsed;
 
-const minimum_index = versions.game.findIndex((game) =>
-  game.version == minimum_game_version
-);
+  for (const [k, v] of Object.entries(updates)) {
+    if (map.has(k)) {
+      const idx = map.get(k)!.lineIndex;
+      lines[idx] = `${k}=${v}`;
+    } else {
+      lines.push(`${k}=${v}`);
+    }
+  }
 
-for (const game of versions.game.slice(0, minimum_index + 1)) {
-  if (game.stable) {
-    const mappings = versions.mappings.findLast((mapping) =>
-      mapping.gameVersion == game.version
-    );
-
-    const mod_versions = await Promise.all(
-      mods.map(async (mod) =>
-        `${mod.replace("-", "_")}=${await get_mod_version(
-          mod,
-          game.version,
-        )}`
-      ),
-    );
-
-    const properties = `minecraft_version=${game.version}
-yarn_mappings=${mappings?.version || NO_VERSION}
-loader_version=${loader.version}
-
-# Mods
-${mod_versions.join("\n")}
-`;
-    Deno.writeTextFileSync(`${game.version}.properties`, properties);
+  if (lines.length === 0 || lines[lines.length - 1] !== "") {
+    return lines.join("\n") + "\n";
+  } else {
+    return lines.join("\n");
   }
 }
+
+if (Deno.args.length < 1) {
+  console.error("Usage: deno run --allow-all script.ts <minecraft_version>");
+  Deno.exit(1);
+}
+const targetVersion = Deno.args[0];
+
+const versions_fetch = await fetch("https://meta.fabricmc.net/v2/versions/");
+const versions = await versions_fetch.json() as Versions;
+
+const mods = Deno.readTextFileSync("mods").trim().split("\n");
+const loader = versions.loader[0];
+
+const gameEntry = versions.game.find((g) => g.version === targetVersion && g.stable);
+if (!gameEntry) {
+  console.error(`Minecraft version ${targetVersion} not found or not stable.`);
+  Deno.exit(1);
+}
+
+const mappings = versions.mappings.findLast((mapping) =>
+  mapping.gameVersion == targetVersion
+);
+
+const mod_versions = await Promise.all(
+  mods.map(async (mod) =>
+    [mod.replace("-", "_"), await get_mod_version(mod, targetVersion)] as const
+  ),
+);
+
+const updates: Record<string, string> = {
+  minecraft_version: targetVersion,
+  // loom_version: mappings?.version || NO_VERSION,
+  loader_version: loader.version,
+};
+
+for (const [key, ver] of mod_versions) {
+  updates[`${key}_version`] = ver;
+}
+
+const gradlePath = "../gradle.properties";
+let gradleContent = "";
+try {
+  gradleContent = Deno.readTextFileSync(gradlePath);
+} catch {
+  gradleContent = "";
+}
+
+gradleContent = buildUpdatedContent(gradleContent, updates);
+Deno.writeTextFileSync(gradlePath, gradleContent);
+console.log(`Updated ${gradlePath} for minecraft ${targetVersion}`);
